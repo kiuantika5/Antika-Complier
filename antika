@@ -1,0 +1,474 @@
+#!/usr/bin/env python3
+import sys
+import os
+import subprocess
+import shutil
+import zipfile
+import urllib.request
+
+VERSION = "2.0.0"
+
+LIBS_DIR = os.path.expanduser("~/.antika_libs")
+os.makedirs(LIBS_DIR, exist_ok=True)
+API_JAR = os.path.join(LIBS_DIR, "shizuku-api.jar")
+SHARED_JAR = os.path.join(LIBS_DIR, "shizuku-shared.jar")
+
+def download_shizuku_libs():
+    if not os.path.exists(API_JAR):
+        try:
+            urllib.request.urlretrieve(
+                "https://repo1.maven.org/maven2/dev/rikka/shizuku/api/13.1.5/api-13.1.5.aar",
+                os.path.join(LIBS_DIR, "api.aar")
+            )
+            with zipfile.ZipFile(os.path.join(LIBS_DIR, "api.aar"), 'r') as zf:
+                zf.extract("classes.jar", LIBS_DIR)
+            os.rename(os.path.join(LIBS_DIR, "classes.jar"), API_JAR)
+        except Exception:
+            pass
+
+    if not os.path.exists(SHARED_JAR):
+        try:
+            urllib.request.urlretrieve(
+                "https://repo1.maven.org/maven2/dev/rikka/shizuku/shared/13.1.5/shared-13.1.5.aar",
+                os.path.join(LIBS_DIR, "shared.aar")
+            )
+            with zipfile.ZipFile(os.path.join(LIBS_DIR, "shared.aar"), 'r') as zf:
+                zf.extract("classes.jar", LIBS_DIR)
+            os.rename(os.path.join(LIBS_DIR, "classes.jar"), SHARED_JAR)
+        except Exception:
+            pass
+
+def find_android_jar():
+    local_path = "android.jar"
+    if os.path.exists(local_path):
+        return local_path
+    termux_sdk_path = os.path.expanduser("~/all-android-jars/sdk-33/android.jar")
+    if os.path.exists(termux_sdk_path):
+        return termux_sdk_path
+    return "/system/framework/framework.jar"
+
+class AntikaCompiler:
+    def __init__(self, filepath):
+        self.filepath = filepath
+        self.variables = {}
+        self.ui_elements = []
+        self.permissions = []
+        self.install_shizuku = False
+
+    def run(self):
+        if not os.path.exists(self.filepath):
+            print(f"[Antika Error] File not found: {self.filepath}")
+            sys.exit(1)
+
+        with open(self.filepath, 'r', encoding='utf-8') as f:
+            code = f.read()
+
+        for line_num, line in enumerate(code.splitlines(), 1):
+            line = line.strip()
+            if not line or line.startswith("//"):
+                continue
+            try:
+                self.execute_line(line)
+            except Exception as e:
+                print(f"[Antika Error Line {line_num}] {e}")
+                sys.exit(1)
+
+    def execute_line(self, line):
+        if line.startswith("let(") and line.endswith(")"):
+            args = self._parse_args(line[4:-1])
+            self.variables[args[0].strip('"\'')] = self._eval_val(args[1])
+            return
+        if line.startswith("print(") and line.endswith(")"):
+            print(self._eval_val(line[6:-1]))
+            return
+        if line.startswith("uiTitle(") and line.endswith(")"):
+            args = self._parse_args(line[8:-1])
+            text = self._eval_val(args[0]) if len(args) > 0 else "Title"
+            elem_id = self._eval_val(args[1]) if len(args) > 1 else f"title_{len(self.ui_elements)}"
+            self.ui_elements.append(("TITLE", elem_id, text))
+            return
+        if line.startswith("uiInput(") and line.endswith(")"):
+            args = self._parse_args(line[8:-1])
+            elem_id = self._eval_val(args[0]) if len(args) > 0 else f"input_{len(self.ui_elements)}"
+            hint = self._eval_val(args[1]) if len(args) > 1 else "Enter text..."
+            self.ui_elements.append(("INPUT", elem_id, hint))
+            return
+        if line.startswith("uiButton(") and line.endswith(")"):
+            args = self._parse_args(line[9:-1])
+            text = self._eval_val(args[0]) if len(args) > 0 else "Button"
+            elem_id = self._eval_val(args[1]) if len(args) > 1 else f"btn_{len(self.ui_elements)}"
+            self.ui_elements.append(("BUTTON", elem_id, text))
+            return
+        if line.startswith("addPermission(") and line.endswith(")"):
+            perm = self._eval_val(line[14:-1])
+            if perm not in self.permissions:
+                self.permissions.append(perm)
+            return
+        if line == "installViaShizuku()":
+            self.install_shizuku = True
+            return
+
+    def _parse_args(self, arg_str):
+        if not arg_str:
+            return []
+        args = []
+        curr, in_quotes, quote_char = "", False, ""
+        for char in arg_str:
+            if char in ('"', "'") and not in_quotes:
+                in_quotes, quote_char, curr = True, char, curr + char
+            elif char == quote_char and in_quotes:
+                in_quotes, curr = False, curr + char
+            elif char == ',' and not in_quotes:
+                args.append(curr.strip())
+                curr = ""
+            else:
+                curr += char
+        if curr.strip():
+            args.append(curr.strip())
+        return args
+
+    def _eval_val(self, expr):
+        expr = expr.strip()
+        if (expr.startswith('"') and expr.endswith('"')) or (expr.startswith("'") and expr.endswith("'")):
+            return expr[1:-1]
+        if expr in self.variables:
+            return self.variables[expr]
+        try:
+            return int(expr)
+        except ValueError:
+            return expr
+
+def generate_default_xml(ui_elements):
+    children_xml = ""
+    for elem in ui_elements:
+        if elem[0] == "TITLE":
+            children_xml += f'''
+    <TextView
+        android:id="@+id/{elem[1]}"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="{elem[2]}"
+        android:textSize="22sp"
+        android:textColor="#D4AF37"
+        android:layout_marginBottom="16dp" />'''
+        elif elem[0] == "INPUT":
+            children_xml += f'''
+    <EditText
+        android:id="@+id/{elem[1]}"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="{elem[2]}"
+        android:textColor="#FFFFFF"
+        android:textColorHint="#888888"
+        android:background="#1E1E1E"
+        android:padding="12dp"
+        android:layout_marginBottom="16dp" />'''
+        elif elem[0] == "BUTTON":
+            children_xml += f'''
+    <Button
+        android:id="@+id/{elem[1]}"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="{elem[2]}"
+        android:backgroundTint="#D4AF37"
+        android:textColor="#121212"
+        android:layout_marginBottom="16dp" />'''
+
+    return f'''<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="24dp"
+    android:background="#121212">
+    {children_xml}
+    <TextView
+        android:id="@+id/output"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:text="Ready. Output stream..."
+        android:textColor="#00FFCC"
+        android:fontFamily="monospace"
+        android:background="#1A1A1A"
+        android:padding="12dp"
+        android:scrollbars="vertical" />
+</LinearLayout>'''
+
+def build_apk(filepath):
+    if not os.path.exists(filepath):
+        print(f"[Antika Error] File not found: {filepath}")
+        sys.exit(1)
+
+    has_shizuku = "--shizuku" in sys.argv
+    if has_shizuku or compiler_needs_shizuku(filepath):
+        download_shizuku_libs()
+
+    android_jar_path = find_android_jar()
+    print(f"[Antika] Using android.jar from: {android_jar_path}")
+
+    base_name = os.path.splitext(os.path.basename(filepath))[0]
+    output_apk = f"{base_name}.unsigned.apk"
+    final_apk = f"{base_name}.apk"
+    pkg_name = f"org.antika.{base_name.lower().replace('-', '_')}"
+    
+    print(f"[Antika v2.0.0] Compiling script '{filepath}'...")
+    compiler = AntikaCompiler(filepath)
+    compiler.run()
+
+    work_dir = "antika_apk_build"
+    if os.path.exists(work_dir):
+        shutil.rmtree(work_dir)
+    os.makedirs(work_dir)
+
+    perms_xml = "".join([f'\n    <uses-permission android:name="{p}" />' for p in compiler.permissions])
+    manifest_path = os.path.join(work_dir, "AndroidManifest.xml")
+    use_shizuku_feature = has_shizuku or compiler.install_shizuku
+    provider_xml = f'''
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="{pkg_name}.shizuku.provider"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />''' if use_shizuku_feature else ""
+
+    manifest_content = f'''<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="{pkg_name}">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="33" />
+    <uses-permission android:name="android.permission.INTERNET" />{perms_xml}
+    <application android:label="{base_name}" android:usesCleartextTraffic="true">
+        {provider_xml}
+        <activity android:name="org.antika.runtime.MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>'''
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        f.write(manifest_content)
+
+    res_layout_dir = os.path.join(work_dir, "res", "layout")
+    os.makedirs(res_layout_dir)
+    with open(os.path.join(res_layout_dir, "activity_main.xml"), "w", encoding="utf-8") as f:
+        f.write(generate_default_xml(compiler.ui_elements))
+
+    assets_dir = os.path.join(work_dir, "assets")
+    os.makedirs(assets_dir)
+    shutil.copy(filepath, os.path.join(assets_dir, "main.antika"))
+
+    java_src_dir = os.path.join(work_dir, "java_src")
+    pkg_dir = os.path.join(java_src_dir, "org", "antika", "runtime")
+    bin_dir = os.path.join(work_dir, "bin")
+    os.makedirs(pkg_dir, exist_ok=True)
+    os.makedirs(bin_dir, exist_ok=True)
+
+    java_code = f"""package org.antika.runtime;
+import android.app.Activity;
+import android.os.Bundle;
+import android.widget.EditText;
+import android.widget.TextView;
+import android.view.View;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.lang.reflect.Method;
+"""
+    if use_shizuku_feature:
+        java_code += "import rikka.shizuku.Shizuku;\n"
+
+    java_code += f"""
+public class MainActivity extends Activity {{
+    private TextView outputView;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {{
+        super.onCreate(savedInstanceState);
+"""
+    if use_shizuku_feature:
+        java_code += """        try {
+            if (Shizuku.pingBinder() && Shizuku.checkSelfPermission() != 0) {
+                Shizuku.requestPermission(0);
+            }
+        } catch (Exception ignored) {}
+"""
+    java_code += f"""        setContentView({pkg_name}.R.layout.activity_main);
+        outputView = (TextView) findViewById({pkg_name}.R.id.output);
+"""
+    for elem in compiler.ui_elements:
+        if elem[0] == "BUTTON":
+            java_code += f"""        View btn_{elem[1]} = findViewById({pkg_name}.R.id.{elem[1]});
+        if (btn_{elem[1]} != null) {{
+            btn_{elem[1]}.setOnClickListener(new View.OnClickListener() {{
+                @Override
+                public void onClick(View v) {{
+                    String cmd = "";
+                    int inputId = getResources().getIdentifier("cmdInput", "id", getPackageName());
+                    View input = findViewById(inputId);
+                    if (input instanceof EditText) {{
+                        cmd = ((EditText) input).getText().toString();
+                    }}
+                    if (cmd.isEmpty()) {{
+                        cmd = "id";
+                    }}
+                    executeCommand(cmd);
+                }}
+            }});
+        }}
+"""
+    java_code += f"""    }}
+
+    public void executeCommand(final String cmd) {{
+        new Thread(new Runnable() {{
+            @Override
+            public void run() {{
+                try {{
+                    String result = "";
+                    boolean executed = false;
+"""
+    if use_shizuku_feature:
+        java_code += """                    try {
+                        Class<?> shizukuClass = Class.forName("rikka.shizuku.Shizuku");
+                        Method pingMethod = shizukuClass.getMethod("pingBinder");
+                        if ((Boolean) pingMethod.invoke(null)) {
+                            Method permMethod = shizukuClass.getMethod("checkSelfPermission");
+                            if ((Integer) permMethod.invoke(null) == 0) {
+                                Method newProcMethod = shizukuClass.getMethod("newProcess", String[].class, String[].class, String.class);
+                                Process process = (Process) newProcMethod.invoke(null, new String[]{"sh", "-c", cmd}, null, null);
+                                result = readStream(process);
+                                executed = true;
+                            }
+                        }
+                    } catch (Exception ignored) {}
+"""
+    java_code += """                    if (!executed) {
+                        Process process = Runtime.getRuntime().exec(new String[]{"sh", "-c", cmd});
+                        result = readStream(process) + "\\n[Note: Executed locally as sandbox UID.]";
+                    }
+                    if (result.trim().isEmpty()) {
+                        result = "Command executed successfully (no output).";
+                    }
+                    final String finalRes = result;
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (outputView != null) {
+                                outputView.setText(finalRes);
+                            }
+                        }
+                    });
+                } catch (Exception e) {
+                    final String err = "Error: " + e.getMessage();
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (outputView != null) {
+                                outputView.setText(err);
+                            }
+                        }
+                    });
+                }
+            }
+        }}).start();
+    }}
+
+    private String readStream(Process process) throws Exception {
+        BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+        BufferedReader errorReader = new BufferedReader(new InputStreamReader(process.getErrorStream()));
+        StringBuilder output = new StringBuilder();
+        String line;
+        while ((line = reader.readLine()) != null) {
+            output.append(line).append("\\n");
+        }
+        while ((line = errorReader.readLine()) != null) {
+            output.append(line).append("\\n");
+        }
+        process.waitFor();
+        return output.toString().trim();
+    }
+}}
+"""
+
+    java_file_path = os.path.join(pkg_dir, "MainActivity.java")
+    with open(java_file_path, "w", encoding="utf-8") as f:
+        f.write(java_code)
+
+    print("[Pipeline] Linking resources and XML layouts via aapt2 (generating R.java)...")
+    compiled_res_dir = os.path.join(work_dir, "compiled_res")
+    os.makedirs(compiled_res_dir, exist_ok=True)
+    subprocess.run(["aapt2", "compile", "--dir", os.path.join(work_dir, "res"), "-o", compiled_res_dir], check=True)
+
+    flat_files = [os.path.join(compiled_res_dir, f) for f in os.listdir(compiled_res_dir) if f.endswith(".flat")]
+    subprocess.run([
+        "aapt2", "link", "--manifest", manifest_path,
+        "-I", android_jar_path,
+        "--java", java_src_dir, "-o", output_apk
+    ] + flat_files, check=True)
+
+    print("[Pipeline] Compiling Java runtime & R.java via ECJ...")
+    java_files = []
+    for root, dirs, files in os.walk(java_src_dir):
+        for file in files:
+            if file.endswith(".java"):
+                java_files.append(os.path.join(root, file))
+
+    cp_arg = android_jar_path
+    if use_shizuku_feature:
+        if os.path.exists(API_JAR): cp_arg += f":{API_JAR}"
+        if os.path.exists(SHARED_JAR): cp_arg += f":{SHARED_JAR}"
+
+    ecj_cmd = "ecj.jar" if os.path.exists("ecj.jar") else "ecj"
+    ecj_args = ["java", "-jar", ecj_cmd] if ecj_cmd.endswith(".jar") else [ecj_cmd]
+    ecj_args.extend(["-classpath", cp_arg, "-d", bin_dir])
+    ecj_args.extend(java_files)
+
+    subprocess.run(ecj_args, check=True)
+
+    print("[Pipeline] Converting class output directory to classes.dex via dx...")
+    dex_output_path = os.path.join(work_dir, "classes.dex")
+    dx_cmd = ["dx", "--dex", "--min-sdk-version=26", f"--output={dex_output_path}"]
+    if use_shizuku_feature:
+        if os.path.exists(API_JAR): dx_cmd.append(API_JAR)
+        if os.path.exists(SHARED_JAR): dx_cmd.append(SHARED_JAR)
+    dx_cmd.append(bin_dir)
+    subprocess.run(dx_cmd, check=True)
+
+    with zipfile.ZipFile(output_apk, 'a', zipfile.ZIP_DEFLATED) as zf:
+        zf.write(dex_output_path, "classes.dex")
+
+    keystore_path = os.path.expanduser("~/.android/debug.keystore")
+    os.makedirs(os.path.dirname(keystore_path), exist_ok=True)
+    if not os.path.exists(keystore_path):
+        subprocess.run([
+            "keytool", "-genkey", "-v", "-keystore", keystore_path,
+            "-storepass", "android", "-alias", "androiddebugkey",
+            "-keypass", "android", "-keyalg", "RSA", "-keysize", "2048",
+            "-validity", "10000", "-dname", "CN=Android Debug, O=Android, C=US"
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    subprocess.run([
+        "apksigner", "sign", "--ks", keystore_path,
+        "--ks-pass", "pass:android", "--key-pass", "pass:android",
+        "--min-sdk-version", "26", output_apk
+    ], check=True)
+
+    if os.path.exists(final_apk):
+        os.remove(final_apk)
+    os.replace(output_apk, final_apk)
+    shutil.rmtree(work_dir)
+    print(f"[SUCCESS] Antika v2.0.0 APK generated successfully: {os.path.abspath(final_apk)}")
+
+def compiler_needs_shizuku(filepath):
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+            return "installViaShizuku" in content
+    except:
+        return False
+
+if __name__ == "__main__":
+    if len(sys.argv) > 2 and sys.argv[2] == "--apk":
+        build_apk(sys.argv[1])
+    else:
+        print("Usage: python3 antika <script.antika> --apk [--shizuku]")

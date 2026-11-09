@@ -1,0 +1,7 @@
+addPermission("android.permission.INTERNET")
+addPermission("android.permission.DUMP")
+
+uiTitle("Antika System Toolkit", "appTitle")
+uiInput("cmdInput", "Enter shell command (e.g., id)")
+uiButton("Execute", "execBtn")
+installViaShizuku()

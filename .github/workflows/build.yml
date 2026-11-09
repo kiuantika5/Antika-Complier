@@ -1,0 +1,56 @@
+name: Build and Release Antika APK
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Set up Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install Build Dependencies & Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aapt apksigner dx zip curl python3-pip
+          # Download standalone ECJ 4.6.1 compiler jar
+          curl -L -o ecj.jar https://repo1.maven.org/maven2/org/eclipse/jdt/core/compiler/ecj/4.6.1/ecj-4.6.1.jar
+          # Download aapt2 binary directly
+          curl -L -o aapt2.jar https://dl.google.com/dl/android/maven2/com/android/tools/build/aapt2/8.1.0-10154469/aapt2-8.1.0-10154469-linux.jar
+          unzip -o aapt2.jar aapt2 -d /usr/local/bin/
+          chmod +x /usr/local/bin/aapt2
+          chmod +x antika
+
+      - name: Build APK
+        run: |
+          python3 antika main.antika --apk --shizuku
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: antika-apk
+          path: '*.apk'
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: "startsWith(github.ref, 'refs/tags/')"
+        with:
+          files: '*.apk'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
