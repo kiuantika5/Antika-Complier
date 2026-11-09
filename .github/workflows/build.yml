@@ -29,6 +29,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y aapt ecj apksigner dx zip curl python3-pip
+          
+          # Create a robust wrapper for the system ecj package
+          sudo tee /usr/local/bin/ecj > /dev/null << 'WRAPPER'
+          #!/bin/sh
+          exec java -jar /usr/share/java/ecj.jar "$@"
+          WRAPPER
+          sudo chmod +x /usr/local/bin/ecj
+
           # Download aapt2 binary directly
           curl -L -o aapt2.jar https://dl.google.com/dl/android/maven2/com/android/tools/build/aapt2/8.1.0-10154469/aapt2-8.1.0-10154469-linux.jar
           unzip -o aapt2.jar aapt2 -d /usr/local/bin/
