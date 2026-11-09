@@ -406,7 +406,7 @@ public class MainActivity extends Activity {{
         "--java", java_src_dir, "-o", output_apk
     ] + flat_files, check=True)
 
-    print("[Pipeline] Compiling Java runtime & R.java via ECJ...")
+    print("[Pipeline] Compiling Java runtime & R.java via system ecj...")
     java_files = []
     for root, dirs, files in os.walk(java_src_dir):
         for file in files:
@@ -418,9 +418,7 @@ public class MainActivity extends Activity {{
         if os.path.exists(API_JAR): cp_arg += f":{API_JAR}"
         if os.path.exists(SHARED_JAR): cp_arg += f":{SHARED_JAR}"
 
-    ecj_cmd = "ecj.jar" if os.path.exists("ecj.jar") else "ecj"
-    ecj_args = ["java", "-jar", ecj_cmd] if ecj_cmd.endswith(".jar") else [ecj_cmd]
-    ecj_args.extend(["-classpath", cp_arg, "-d", bin_dir])
+    ecj_args = ["ecj", "-classpath", cp_arg, "-d", bin_dir]
     ecj_args.extend(java_files)
 
     subprocess.run(ecj_args, check=True)

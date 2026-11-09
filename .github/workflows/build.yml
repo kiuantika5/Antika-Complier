@@ -28,9 +28,7 @@ jobs:
       - name: Install Build Dependencies & Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y aapt apksigner dx zip curl python3-pip
-          # Download standalone ECJ 4.6.1 compiler jar
-          curl -L -o ecj.jar https://repo1.maven.org/maven2/org/eclipse/jdt/core/compiler/ecj/4.6.1/ecj-4.6.1.jar
+          sudo apt-get install -y aapt ecj apksigner dx zip curl python3-pip
           # Download aapt2 binary directly
           curl -L -o aapt2.jar https://dl.google.com/dl/android/maven2/com/android/tools/build/aapt2/8.1.0-10154469/aapt2-8.1.0-10154469-linux.jar
           unzip -o aapt2.jar aapt2 -d /usr/local/bin/
